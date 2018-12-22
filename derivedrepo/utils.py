@@ -19,6 +19,8 @@ def copy_to_working_dir(src: Path, repo: git.Repo):
     copy_dir_content(src, working_dir)
 
 def clear_directory(dir_path: Path, excludes = set()):
+    if not dir_path.exists():
+        return
     for name in os.listdir(dir_path):
         if name in excludes:
             continue

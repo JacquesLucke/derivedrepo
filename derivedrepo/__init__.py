@@ -13,7 +13,7 @@ import traceback
 
 from os import PathLike
 from pathlib import Path
-from typing import Any, List, Union, Optional, Callable, Tuple, Mapping
+from typing import Any, List, Union, Optional, Callable, Tuple, Mapping, Sequence
 
 from . remotes import (
     RemoteRepoAdapter,
@@ -77,7 +77,10 @@ class DerivedGitRepo:
         self.default_checkout_dir = self.local_dir / "checkout"
         self.generate_path = self.local_dir / "generate.py"
 
-        self.config = ConfigFile(self.local_dir / "config.json")
+        config_path = self.local_dir / "config.json"
+        if not config_path.exists():
+            raise Exception("directory has no config.json")
+        self.config = ConfigFile(config_path)
 
         self.source_path = self.config.get_source_path()
         self.source_repo = git.Repo(self.source_path)
@@ -89,29 +92,23 @@ class DerivedGitRepo:
             values = exec_file(self.config.get_derive_path())
             self.derive = values["derive"]
 
-    @restore_source_repo
-    def add_single(self, hexsha):
-        commits = [self.source_repo.commit(hexsha)]
-        self._add_derived_commits(commits)
+    def get_source_repo(self):
+        return self.source_repo
 
     @restore_source_repo
-    def add_last_n(self, branch, amount):
-        commits = list(itertools.islice(self.source_repo.iter_commits(branch), amount))
-        commits = list(reversed(commits))
-        self._add_derived_commits(commits)
-
-    @restore_source_repo
-    def add_last_days(self, branch, days):
-        stop = time.time() - datetime.timedelta(days=days).total_seconds()
-
-        commits = []
-        for commit in self.source_repo.iter_commits(branch):
-            commit: git.Commit
-            if commit.committed_datetime.timestamp() > stop:
-                commits.append(commit)
-
-        commits = list(reversed(commits))
-        self._add_derived_commits(commits)
+    def insert(self, commits: Union[str, Sequence[str]]):
+        if isinstance(commits, str):
+            commits = [commits]
+        final_commits = []
+        for commit in commits:
+            if isinstance(commit, str):
+                commit = self.source_repo.commit(commit)
+            elif isinstance(commit, git.Commit):
+                pass
+            else:
+                raise TypeError("expected commit or commit identifier")
+            final_commits.append(commit)
+        self._add_derived_commits(final_commits)
 
     def checkout(self, hexsha, directory: Optional[PathLike] = None) -> Path:
         if directory is None:
@@ -145,6 +142,16 @@ class DerivedGitRepo:
 
         for repo in self._iter_local_repos():
             group.upload_repo(repo)
+
+    def dump_status(self):
+        print("Derived Repository in", self.local_dir)
+        print("  Source:", self.source_path)
+        print("  Local Repositories:")
+        for repo in self._iter_local_repos():
+            print(f"    {Path(repo.working_dir).name}")
+        print("  Remote Groups:")
+        for group in self.config.iter_remote_repo_groups():
+            print("    Group at", group.path)
 
     def _get_any_writeable_remote_repo_group(self) -> Optional[RemoteRepoAdapter]:
         for group in self.config.iter_remote_repo_groups():
@@ -215,8 +222,7 @@ class DerivedGitRepo:
         dst_repo.git.checkout("empty")
 
     def _insert_derived_commit(self, dst_repo, src_commit):
-        if self.derive is None:
-            raise Exception("derive function is not set")
+        self._ensure_derive_function()
 
         self.source_repo.git.checkout(src_commit.hexsha)
 
