@@ -3,6 +3,7 @@ import git
 import json
 import random
 import shutil
+import string
 from pathlib import Path
 
 def clear_working_dir(repo: git.Repo):

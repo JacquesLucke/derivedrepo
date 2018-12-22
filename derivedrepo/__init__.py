@@ -1,16 +1,23 @@
 import os
 import git
 import json
+import time
 import shutil
 import string
 import random
+import datetime
 import itertools
 import functools
 import traceback
 
 from os import PathLike
 from pathlib import Path
-from typing import List, Union, Optional, Callable, Tuple
+from typing import Any, List, Union, Optional, Callable, Tuple, Mapping
+
+from . remotes import (
+    RemoteRepoAdapter,
+    FolderRepoGroupAdapter,
+)
 
 from . utils import (
     clear_directory,
@@ -23,7 +30,7 @@ from . utils import (
 )
 
 
-DeriveFunction = Callable[[Path], Union[PathLike, None]]
+DeriveFunction = Callable[[Path], Union[Tuple[PathLike, Mapping[str, Any]], None]]
 
 def restore_source_repo(function):
     @functools.wraps(function)
@@ -39,32 +46,26 @@ def restore_source_repo(function):
 class DerivedGitRepo:
     source_path: Path
     source_repo: git.Repo
+
     local_dir: Path
-    remote_config: "RemoteConfig"
-    derive: DeriveFunction
-    checkout_dir: Path
+    default_checkout_dir: Path
     local_repos_dir: Path
+    config: "ConfigFile"
+
+    derive: DeriveFunction
 
     def __init__(self,
             source_path: PathLike,
             local_dir: PathLike,
-            remote_config_path: PathLike,
-            derive: DeriveFunction,
-            *,
-            checkout_dir: Optional[PathLike] = None):
+            derive: DeriveFunction):
         self.source_path = Path(source_path)
-        self.local_dir = Path(local_dir)
-        self.remote_config = RemoteConfig.from_path(remote_config_path)
-
         self.source_repo = git.Repo(self.source_path)
         self.derive = derive
 
+        self.local_dir = Path(local_dir)
         self.local_repos_dir = self.local_dir / "repos"
-
-        if checkout_dir is None:
-            self.checkout_dir = self.local_dir / "checkout"
-        else:
-            self.checkout_dir = Path(checkout_dir)
+        self.default_checkout_dir = self.local_dir / "checkout"
+        self.config = ConfigFile(self.local_dir / "config.json")
 
     @restore_source_repo
     def add_single(self, hexsha):
@@ -77,21 +78,74 @@ class DerivedGitRepo:
         commits = list(reversed(commits))
         self._add_derived_commits(commits)
 
-    def checkout(self, hexsha):
-        for repo in self._iter_local_repos_with_commit(hexsha):
-            self._ensure_checkout_dir()
-            commit = repo.tags[hexsha].commit
-            clear_directory(self.checkout_dir)
-            repo.git.checkout(commit.hexsha)
-            copy_working_dir(repo, self.checkout_dir)
-            repo.git.checkout("empty")
-            break
-        else:
-            raise Exception("cannot find commit")
+    @restore_source_repo
+    def add_last_days(self, branch, days):
+        stop = time.time() - datetime.timedelta(days=days).total_seconds()
 
-    def add_remote_directory(self, path: PathLike):
-        path = Path(path)
-        self.remote_config.add_remote_directory(path)
+        commits = []
+        for commit in self.source_repo.iter_commits(branch):
+            commit: git.Commit
+            if commit.committed_datetime.timestamp() > stop:
+                commits.append(commit)
+
+        commits = list(reversed(commits))
+        self._add_derived_commits(commits)
+
+    def checkout(self, hexsha, directory: Optional[PathLike] = None) -> Path:
+        if directory is None:
+            directory = self.default_checkout_dir
+        directory = Path(directory)
+
+        repo = self._get_any_local_repo_with_commit(hexsha)
+        if repo is None:
+            remote_repo = self._get_any_remote_repo_with_commit(hexsha)
+            if remote_repo is None:
+                raise Exception("cannot find commit")
+            self._ensure_local_repos_dir()
+            repo = remote_repo.download(self.local_repos_dir / get_random_string(8))
+
+        if not directory.exists():
+            os.makedirs(directory)
+        commit = repo.tags[hexsha].commit
+        clear_directory(directory)
+        repo.git.checkout(commit.hexsha)
+        copy_working_dir(repo, directory)
+        repo.git.checkout("empty")
+        return directory
+
+    def add_remote_file_repo_group(self, path: PathLike):
+        self.config.add_remote_file_repo_group(Path(path))
+
+    def upload_all(self):
+        group = self._get_any_writeable_remote_repo_group()
+        if group is None:
+            raise Exception("cannot find writeable remote")
+
+        for repo in self._iter_local_repos():
+            group.upload_repo(repo)
+
+    def _get_any_writeable_remote_repo_group(self) -> Optional[RemoteRepoAdapter]:
+        for group in self.config.iter_remote_repo_groups():
+            if not group.readonly:
+                return group
+        return None
+
+    def _get_any_local_repo_with_commit(self, hexsha) -> Optional[git.Repo]:
+        for repo in self._iter_local_repos_with_commit(hexsha):
+            return repo
+        return None
+
+    def _get_any_remote_repo_with_commit(self, hexsha) -> Optional[RemoteRepoAdapter]:
+        for repo in self._iter_remote_repos_with_commit(hexsha):
+            return repo
+        return None
+
+    def _iter_remote_repos_with_commit(self, hexsha):
+        for repo in self.config.iter_remote_repos():
+            print(repo)
+            print(repo.has_commit(hexsha))
+            if repo.has_commit(hexsha):
+                yield repo
 
     def _iter_local_repos_with_commit(self, hexsha):
         for repo in self._iter_local_repos():
@@ -117,7 +171,7 @@ class DerivedGitRepo:
         return list(self._iter_local_repos())
 
     def _iter_local_repos(self):
-        self._ensure_local_dir()
+        self._ensure_local_repos_dir()
         for name in os.listdir(self.local_repos_dir):
             path = self.local_repos_dir / name
             if path.is_dir():
@@ -142,59 +196,63 @@ class DerivedGitRepo:
         self.source_repo.git.checkout(src_commit.hexsha)
 
         try:
-            output_dir = self.derive(self.source_path)
+            output = self.derive(self.source_path)
         except:
             traceback.print_exc()
-            output_dir = None
+            output = None
 
-        author = f"{src_commit.author.name} <{src_commit.author.email}>"
-        date = str(src_commit.authored_date)
-
-        if output_dir is None:
-            dst_repo.git.commit("--allow-empty", m=src_commit.message, author=author, date=date)
-            dst_repo.git.tag(src_commit.hexsha)
-            dst_repo.git.notes(m="invalid")
+        if output is None:
+            note = {"valid" : False}
         else:
-            output_dir = Path(output_dir)
+            note = {"valid" : True, "data" : output[1]}
+            output_dir = Path(output[0])
             clear_working_dir(dst_repo)
             copy_to_working_dir(output_dir, dst_repo)
             dst_repo.git.add(".")
-            dst_repo.git.commit("--allow-empty", m=src_commit.message, author=author, date=date)
-            dst_repo.git.tag(src_commit.hexsha)
+
+        dst_repo.git.commit(
+            "--allow-empty",
+            m=src_commit.message,
+            author=f"{src_commit.author.name} <{src_commit.author.email}>",
+            date=str(src_commit.authored_date))
+
+        dst_repo.git.tag(src_commit.hexsha)
+        dst_repo.git.notes("add", "-m", json.dumps(note))
 
     def _ensure_local_dir(self):
         if not self.local_dir.exists():
             os.makedirs(self.local_dir)
 
-    def _ensure_checkout_dir(self):
-        if not self.checkout_dir.exists():
-            os.makedirs(self.checkout_dir)
+    def _ensure_local_repos_dir(self):
+        if not self.local_repos_dir.exists():
+            os.makedirs(self.local_repos_dir)
 
 
-class RemoteConfig:
+class ConfigFile:
     path: Path
 
-    @classmethod
-    def from_path(cls, path: PathLike):
-        self = RemoteConfig()
-        self.path = Path(path)
-        return self
+    def __init__(self, path: Path):
+        self.path = path
 
-    @property
-    def remote_directories(self):
-        data = self._load()
-        return tuple(data["remoteFolders"])
+    def iter_remote_repos(self):
+        for group in self.iter_remote_repo_groups():
+            yield from group.iter_repos()
 
-    def add_remote_directory(self, path: Path):
+    def iter_remote_repo_groups(self):
         data = self._load()
-        if str(path) not in data["remoteFolders"]:
-            data["remoteFolders"].append(str(path))
+        for directory in data["fileRepoGroups"]:
+            yield FolderRepoGroupAdapter(Path(directory))
+
+    def add_remote_file_repo_group(self, directory: Path):
+        data = self._load()
+        if str(directory) not in data["fileRepoGroups"]:
+            data["fileRepoGroups"].append(str(directory))
             self._save(data)
 
     def _load(self):
         self._ensure_file_exists()
         data = read_json_from_file(self.path)
-        data["remoteFolders"] = data.get("remoteFolders", [])
+        data["fileRepoGroups"] = data.get("fileRepoGroups", [])
         return data
 
     def _save(self, data):
