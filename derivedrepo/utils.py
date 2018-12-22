@@ -40,12 +40,30 @@ def copy_dir_content(src: Path, dst: Path, excludes = set()):
             shutil.copytree(src_path, dst_path, symlinks=True)
 
 def write_json_to_file(path, data):
-    with open(path, "wt") as fs:
-        fs.write(json.dumps(data, indent=4))
+    write_text_file(path, json.dumps(data, indent=4))
 
 def read_json_from_file(path):
+    return json.loads(read_text_file(path))
+
+def read_text_file(path):
     with open(path, "rt") as fs:
-        return json.loads(fs.read())
+        return fs.read()
+
+def write_text_file(path, text):
+    with open(path, "wt") as fs:
+        fs.write(text)
+
+def exec_file(path):
+    code = read_text_file(path)
+    values = dict()
+    exec(code, values, values)
+    return values
 
 def get_random_string(length):
     return "".join(random.choices(string.ascii_lowercase, k=length))
+
+def make_path_absolute_if_relative(path: Path, default_root: Path):
+    if path.is_absolute():
+        return path
+    else:
+        return default_root / path

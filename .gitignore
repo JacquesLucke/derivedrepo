@@ -3,3 +3,4 @@ local_stuff
 remote_config
 __pycache__
 remote_config.json
+derivedrepo.egg-info

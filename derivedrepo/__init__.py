@@ -5,6 +5,7 @@ import time
 import shutil
 import string
 import random
+import textwrap
 import datetime
 import itertools
 import functools
@@ -27,6 +28,9 @@ from . utils import (
     get_random_string,
     write_json_to_file,
     read_json_from_file,
+    write_text_file,
+    exec_file,
+    make_path_absolute_if_relative,
 )
 
 
@@ -52,20 +56,38 @@ class DerivedGitRepo:
     local_repos_dir: Path
     config: "ConfigFile"
 
+    derive_path: Path
     derive: DeriveFunction
 
-    def __init__(self,
-            source_path: PathLike,
-            local_dir: PathLike,
-            derive: DeriveFunction):
-        self.source_path = Path(source_path)
-        self.source_repo = git.Repo(self.source_path)
-        self.derive = derive
+    @classmethod
+    def init(self, source_path: PathLike, local_dir: PathLike):
+        if any(name for name in os.listdir(local_dir) if not name.startswith(".")):
+            raise Exception("the directory is not empty")
 
+        local_dir = Path(local_dir)
+        config = ConfigFile(local_dir / "config.json")
+        config.set_source_path(source_path)
+        config.set_derive_path("derive.py")
+        write_text_file(make_path_absolute_if_relative(config.get_derive_path(), local_dir), derive_file_template)
+        return DerivedGitRepo(local_dir)
+
+    def __init__(self, local_dir: PathLike):
         self.local_dir = Path(local_dir)
         self.local_repos_dir = self.local_dir / "repos"
         self.default_checkout_dir = self.local_dir / "checkout"
+        self.generate_path = self.local_dir / "generate.py"
+
         self.config = ConfigFile(self.local_dir / "config.json")
+
+        self.source_path = self.config.get_source_path()
+        self.source_repo = git.Repo(self.source_path)
+
+        self.derive = None
+
+    def _ensure_derive_function(self):
+        if self.derive is None:
+            values = exec_file(self.config.get_derive_path())
+            self.derive = values["derive"]
 
     @restore_source_repo
     def add_single(self, hexsha):
@@ -193,19 +215,24 @@ class DerivedGitRepo:
         dst_repo.git.checkout("empty")
 
     def _insert_derived_commit(self, dst_repo, src_commit):
+        if self.derive is None:
+            raise Exception("derive function is not set")
+
         self.source_repo.git.checkout(src_commit.hexsha)
 
         try:
             output = self.derive(self.source_path)
         except:
             traceback.print_exc()
-            output = None
+            output = (None, dict())
 
-        if output is None:
-            note = {"valid" : False}
+        output_dir, output_dict = output
+
+        if output_dir is None:
+            note = {"valid" : False, "data" : output_dict}
         else:
-            note = {"valid" : True, "data" : output[1]}
-            output_dir = Path(output[0])
+            note = {"valid" : True, "data" : output_dict}
+            output_dir = Path(output_dir)
             clear_working_dir(dst_repo)
             copy_to_working_dir(output_dir, dst_repo)
             dst_repo.git.add(".")
@@ -249,10 +276,28 @@ class ConfigFile:
             data["fileRepoGroups"].append(str(directory))
             self._save(data)
 
+    def set_source_path(self, path: Path):
+        data = self._load()
+        data["sourcePath"] = str(path)
+        self._save(data)
+
+    def get_source_path(self):
+        return Path(self._load()["sourcePath"])
+
+    def set_derive_path(self, path: Path):
+        data = self._load()
+        data["derivePath"] = str(path)
+        self._save(data)
+
+    def get_derive_path(self):
+        return Path(self._load()["derivePath"])
+
     def _load(self):
         self._ensure_file_exists()
         data = read_json_from_file(self.path)
         data["fileRepoGroups"] = data.get("fileRepoGroups", [])
+        data["sourcePath"] = data.get("sourcePath", None)
+        data["derivePath"] = data.get("derivePath", None)
         return data
 
     def _save(self, data):
@@ -265,3 +310,8 @@ class ConfigFile:
             os.makedirs(self.path.parent)
         if not self.path.exists():
             write_json_to_file(self.path, {})
+
+
+derive_file_template = textwrap.dedent('''\
+    def derive(source):
+        return None, dict()''')
