@@ -133,7 +133,7 @@ class DerivedGitRepo:
             print(f"    {local_set.get_name()}: {len(commits)} commits")
             if show_commits:
                 for commit in commits:
-                    print(f"      {commit.hexsha[:7]} - {commit.message.strip()}")
+                    print(f"      {commit.hexsha[:7]} - {commit.message.splitlines()[0]}")
         print("  Remote Set Collections:")
         for set_collection in self.config.iter_remote_set_collections():
             remote_sets = list(set_collection.iter_sets())
@@ -143,7 +143,7 @@ class DerivedGitRepo:
                 print(f"      {remote_set.get_name()}: {len(commits)} commits")
                 if show_commits:
                     for commit in commits:
-                        print(f"       {commit.hexsha[:7]} - {commit.message.strip()}")
+                        print(f"       {commit.hexsha[:7]} - {commit.message.splitlines()[0]}")
 
 
     # Set Discovery

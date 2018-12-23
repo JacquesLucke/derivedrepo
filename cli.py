@@ -111,7 +111,7 @@ def set_new_latest_days(days, branch, name, split):
             date = str(commit.committed_datetime.date())
             commits_per_days[date].append(commit)
         for date, commits in commits_per_days.items():
-            drepo.new_set(name + " " + date, commits, NewSetLogger())
+            drepo.new_set(name + date, commits, NewSetLogger())
 
 @set_new_latest.command(name="commits")
 @click.argument("amount", type=click.IntRange(0))
