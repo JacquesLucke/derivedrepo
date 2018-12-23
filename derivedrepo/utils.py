@@ -69,3 +69,8 @@ def make_path_absolute_if_relative(path: Path, default_root: Path):
         return path
     else:
         return default_root / path
+
+def ensure_dir_exists(path: Path):
+    assert path.is_dir()
+    if not path.exists():
+        os.makedirs(path)

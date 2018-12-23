@@ -9,8 +9,9 @@ setup(
         'click',
         'gitpython',
     ],
-    entry_points='''
-        [console_scripts]
-        derivedrepo=cli:cli
-    ''',
+    entry_points={
+        'console_scripts': [
+            'derivedrepo = cli:safe_cli',
+        ]
+    },
 )

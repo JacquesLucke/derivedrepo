@@ -1,4 +1,5 @@
 import os
+import sys
 import time
 import click
 import datetime
@@ -7,9 +8,16 @@ from pathlib import Path
 from derivedrepo import DerivedGitRepo, Logger
 from derivedrepo.utils import clear_directory
 
+def safe_cli():
+    try: cli()
+    except Exception as e:
+        click.echo("Error: " + str(e), err=True)
+        sys.exit(1)
+
 @click.group()
 def cli():
     pass
+
 
 @cli.command()
 @click.argument('source', type=click.Path(exists=True, dir_okay=True, file_okay=False))
@@ -22,11 +30,7 @@ def init(source):
     except Exception as e:
         print("Could not initialize:", str(e))
 
-@cli.group()
-def derive():
-    pass
-
-class DeriveLogger(Logger):
+class NewSetLogger(Logger):
     def log_check_commit_to_derive(self, commit):
         print("Check commit:", commit)
 
@@ -47,46 +51,60 @@ class DeriveLogger(Logger):
     def log_derivative_stored(self, commit):
         print("  Stored.")
 
-@derive.command(name="current")
-def derive_current():
-    drepo = get_drepo()
-    src_repo = drepo.get_source_repo()
-    drepo.insert(src_repo.head.commit.hexsha, DeriveLogger())
 
-@derive.command(name="commit")
-@click.argument("id")
-def derive_commit(id):
-    drepo = get_drepo()
-    drepo.insert(id, DeriveLogger())
-
-@derive.group(name="last")
-def derive_last():
+@cli.group(name="set")
+def set_():
     pass
 
-@derive_last.command(name="commits")
-@click.option("--amount", default=0)
-@click.option("--branch", default="master")
-def derive_last_commits(amount, branch):
+@set_.command(name="list")
+def set_list():
+    drepo = get_drepo()
+    for repo in drepo._iter_local_repos():
+        print(repo)
+
+@set_.group(name="new")
+def set_new():
+    pass
+
+@set_new.command(name="id")
+@click.argument("commit_id")
+@click.option("--name", default="Test Set")
+def set_new_id(commit_id, name):
+    drepo = get_drepo()
+    drepo.new_set(name, commit_id, NewSetLogger())
+
+@set_new.group(name="latest")
+def set_new_latest():
+    pass
+
+@set_new_latest.command(name="days")
+@click.argument("days", type=click.IntRange(0))
+@click.option("--branch", required=True)
+@click.option("--name", required=True)
+def set_new_latest_days(days, branch, name):
     drepo = get_drepo()
     src_repo = drepo.get_source_repo()
-    commits = list(itertools.islice(src_repo.iter_commits(branch), amount))
-    drepo.insert(list(reversed(commits)), DeriveLogger())
 
-@derive_last.command(name="days")
-@click.option("--amount", default=0)
-@click.option("--branch", default="master")
-def derive_last_days(amount, branch):
-    drepo = get_drepo()
-    src_repo = drepo.get_source_repo()
-
-    stop = time.time() - datetime.timedelta(days=amount).total_seconds()
+    stop = time.time() - datetime.timedelta(days=days).total_seconds()
     commits = []
 
     for commit in src_repo.iter_commits(branch):
-        if commit.committed_datetime.timestamp() > stop:
-            commits.append(commit)
+        if commit.committed_datetime.timestamp() < stop:
+            break
+        commits.append(commit)
 
-    drepo.insert(list(reversed(commits)), DeriveLogger())
+    drepo.new_set(name, list(reversed(commits)), NewSetLogger())
+
+@set_new_latest.command(name="commits")
+@click.argument("amount", type=click.IntRange(0))
+@click.option("--branch", required=True)
+@click.option("--name", required=True)
+def set_new_latest_commits(amount, branch, name):
+    drepo = get_drepo()
+    src_repo = drepo.get_source_repo()
+    commits = list(itertools.islice(src_repo.iter_commits(branch), amount))
+    drepo.new_set(name, list(reversed(commits)), NewSetLogger())
+
 
 @cli.command()
 @click.argument("id")
@@ -125,6 +143,7 @@ def clear_local():
     drepo = get_drepo()
     clear_directory(drepo.default_checkout_dir)
     clear_directory(drepo.local_repos_dir)
+    clear_directory(drepo.worktrees_dir)
 
 @cli.command()
 def status():

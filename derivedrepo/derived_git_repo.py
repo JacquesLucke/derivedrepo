@@ -12,6 +12,7 @@ from typing import Any, List, Union, Optional, Callable, Tuple, Mapping, Sequenc
 
 from . config import ConfigFile
 from . logger import Logger
+from . worktree import WorkTree
 
 from . remotes import (
     RemoteRepoAdapter,
@@ -28,6 +29,7 @@ from . utils import (
     read_json_from_file,
     write_text_file,
     exec_file,
+    ensure_dir_exists,
     make_path_absolute_if_relative,
 )
 
@@ -52,6 +54,7 @@ class DerivedGitRepo:
     local_dir: Path
     default_checkout_dir: Path
     local_repos_dir: Path
+    worktrees_dir: Path
     config: "ConfigFile"
 
     derive_path: Path
@@ -73,7 +76,7 @@ class DerivedGitRepo:
         self.local_dir = Path(local_dir)
         self.local_repos_dir = self.local_dir / "repos"
         self.default_checkout_dir = self.local_dir / "checkout"
-        self.generate_path = self.local_dir / "generate.py"
+        self.worktrees_dir = self.local_dir / "worktrees"
 
         config_path = self.local_dir / "config.json"
         if not config_path.exists():
@@ -94,19 +97,22 @@ class DerivedGitRepo:
         return self.source_repo
 
     @restore_source_repo
-    def insert(self, commits: Union[str, Sequence[str]], logger=Logger()):
-        if isinstance(commits, str):
+    def new_set(self, name: str, commits, logger=Logger()):
+        if isinstance(commits, (str, git.Commit)):
             commits = [commits]
+
         final_commits = []
         for commit in commits:
             if isinstance(commit, str):
                 commit = self.source_repo.commit(commit)
             elif isinstance(commit, git.Commit):
-                pass
+                if commit.repo != self.source_repo:
+                    raise Exception("commit is not in correct repo")
             else:
                 raise TypeError("expected commit or commit identifier")
             final_commits.append(commit)
-        self._add_derived_commits(final_commits, logger)
+
+        self._new_set(name, final_commits, logger)
 
     def checkout(self, hexsha, directory: Optional[PathLike] = None) -> Path:
         if directory is None:
@@ -221,12 +227,24 @@ class DerivedGitRepo:
 
         dst_repo.git.checkout("empty")
 
-    def _insert_derived_commit(self, dst_repo, src_commit, logger):
+    def _new_set(self, name, src_commits, logger):
+        worktree_dir = self.worktrees_dir / name
+        final_dir = self.local_repos_dir / name
+        if final_dir.exists():
+            raise Exception("Set exists already")
+
+        worktree = WorkTree(worktree_dir)
+
+        for src_commit in src_commits:
+            self._insert_derived_commit(worktree, src_commit, logger)
+
+        worktree.finalize(final_dir)
+
+    def _insert_derived_commit(self, worktree, src_commit, logger):
         self._ensure_derive_function()
 
         logger.log_checkout(src_commit)
         self.source_repo.git.checkout(src_commit.hexsha)
-
 
         custom_notes = dict()
         try:
@@ -236,36 +254,28 @@ class DerivedGitRepo:
             traceback.print_exc()
             output_dir = None
 
+        message = src_commit.summary
+        author = f"{src_commit.author.name} <{src_commit.author.email}>"
+        date = str(src_commit.committed_date)
+        tags = {src_commit.hexsha}
+
         if output_dir is None:
             logger.log_derive_failed(src_commit, custom_notes)
             note = {"valid" : False, "data" : custom_notes}
+            worktree.commit_no_change(message, author, date, tags, note)
         else:
             logger.log_derive_finished(src_commit, output_dir, custom_notes)
             note = {"valid" : True, "data" : custom_notes}
             output_dir = Path(output_dir)
-            clear_working_dir(dst_repo)
-            copy_to_working_dir(output_dir, dst_repo)
-            dst_repo.git.add(".")
+            worktree.commit_state(output_dir, message, author, date, tags, note)
 
-        dst_repo.git.commit(
-            "--allow-empty",
-            m=src_commit.message,
-            author=f"{src_commit.author.name} <{src_commit.author.email}>",
-            date=str(src_commit.authored_date))
-
-        dst_repo.git.tag(src_commit.hexsha)
-        dst_repo.git.notes("add", "-m", json.dumps(note))
         logger.log_derivative_stored(src_commit)
 
     def _ensure_local_dir(self):
-        if not self.local_dir.exists():
-            os.makedirs(self.local_dir)
+        ensure_dir_exists(self.local_dir)
 
     def _ensure_local_repos_dir(self):
-        if not self.local_repos_dir.exists():
-            os.makedirs(self.local_repos_dir)
-
-
+        ensure_dir_exists(self.local_repos_dir)
 
 
 derive_file_template = textwrap.dedent('''\
