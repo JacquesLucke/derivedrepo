@@ -4,7 +4,7 @@ import click
 import datetime
 import itertools
 from pathlib import Path
-from derivedrepo import DerivedGitRepo
+from derivedrepo import DerivedGitRepo, Logger
 from derivedrepo.utils import clear_directory
 
 @click.group()
@@ -26,17 +26,38 @@ def init(source):
 def derive():
     pass
 
+class DeriveLogger(Logger):
+    def log_check_commit_to_derive(self, commit):
+        print("Check commit:", commit)
+
+    def log_commit_already_derived(self, commit):
+        print("  Already derived.")
+
+    def log_derive_start(self, commit):
+        print("  Derive Start:", commit)
+
+    def log_derive_finished(self, commit, output_dir, notes):
+        print("  Finished. Output at", output_dir)
+        print("  Notes:", notes)
+
+    def log_derive_failed(self, commit, notes):
+        print("  Failed.")
+        print("  Notes:", notes)
+
+    def log_derivative_stored(self, commit):
+        print("  Stored.")
+
 @derive.command(name="current")
 def derive_current():
     drepo = get_drepo()
     src_repo = drepo.get_source_repo()
-    drepo.insert(src_repo.head.commit.hexsha)
+    drepo.insert(src_repo.head.commit.hexsha, DeriveLogger())
 
 @derive.command(name="commit")
 @click.argument("id")
 def derive_commit(id):
     drepo = get_drepo()
-    drepo.insert(id)
+    drepo.insert(id, DeriveLogger())
 
 @derive.group(name="last")
 def derive_last():
@@ -49,7 +70,7 @@ def derive_last_commits(amount, branch):
     drepo = get_drepo()
     src_repo = drepo.get_source_repo()
     commits = list(itertools.islice(src_repo.iter_commits(branch), amount))
-    drepo.insert(list(reversed(commits)))
+    drepo.insert(list(reversed(commits)), DeriveLogger())
 
 @derive_last.command(name="days")
 @click.option("--amount", default=0)
@@ -65,7 +86,7 @@ def derive_last_days(amount, branch):
         if commit.committed_datetime.timestamp() > stop:
             commits.append(commit)
 
-    drepo.insert(list(reversed(commits)))
+    drepo.insert(list(reversed(commits)), DeriveLogger())
 
 @cli.command()
 @click.argument("id")

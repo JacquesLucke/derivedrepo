@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, List, Union, Optional, Callable, Tuple, Mapping, Sequence
 
 from . config import ConfigFile
+from . logger import Logger
 
 from . remotes import (
     RemoteRepoAdapter,
@@ -93,7 +94,7 @@ class DerivedGitRepo:
         return self.source_repo
 
     @restore_source_repo
-    def insert(self, commits: Union[str, Sequence[str]]):
+    def insert(self, commits: Union[str, Sequence[str]], logger=Logger()):
         if isinstance(commits, str):
             commits = [commits]
         final_commits = []
@@ -105,7 +106,7 @@ class DerivedGitRepo:
             else:
                 raise TypeError("expected commit or commit identifier")
             final_commits.append(commit)
-        self._add_derived_commits(final_commits)
+        self._add_derived_commits(final_commits, logger)
 
     def checkout(self, hexsha, directory: Optional[PathLike] = None) -> Path:
         if directory is None:
@@ -204,35 +205,42 @@ class DerivedGitRepo:
                 try: yield git.Repo(path)
                 except: pass
 
-    def _add_derived_commits(self, src_commits):
+    def _add_derived_commits(self, src_commits, logger):
         dst_repo = self._get_any_local_repo()
-        self._add_derived_commits_to_repo(dst_repo, src_commits)
+        self._add_derived_commits_to_repo(dst_repo, src_commits, logger)
 
-    def _add_derived_commits_to_repo(self, dst_repo, src_commits):
+    def _add_derived_commits_to_repo(self, dst_repo, src_commits, logger):
         dst_repo.git.checkout("master")
 
         for src_commit in src_commits:
+            logger.log_check_commit_to_derive(src_commit)
             if src_commit.hexsha in dst_repo.tags:
+                logger.log_commit_already_derived(src_commit)
                 continue
-            self._insert_derived_commit(dst_repo, src_commit)
+            self._insert_derived_commit(dst_repo, src_commit, logger)
 
         dst_repo.git.checkout("empty")
 
-    def _insert_derived_commit(self, dst_repo, src_commit):
+    def _insert_derived_commit(self, dst_repo, src_commit, logger):
         self._ensure_derive_function()
 
+        logger.log_checkout(src_commit)
         self.source_repo.git.checkout(src_commit.hexsha)
+
 
         custom_notes = dict()
         try:
+            logger.log_derive_start(src_commit)
             output_dir = self.derive(self.source_path, custom_notes)
         except:
             traceback.print_exc()
             output_dir = None
 
         if output_dir is None:
+            logger.log_derive_failed(src_commit, custom_notes)
             note = {"valid" : False, "data" : custom_notes}
         else:
+            logger.log_derive_finished(src_commit, output_dir, custom_notes)
             note = {"valid" : True, "data" : custom_notes}
             output_dir = Path(output_dir)
             clear_working_dir(dst_repo)
@@ -247,6 +255,7 @@ class DerivedGitRepo:
 
         dst_repo.git.tag(src_commit.hexsha)
         dst_repo.git.notes("add", "-m", json.dumps(note))
+        logger.log_derivative_stored(src_commit)
 
     def _ensure_local_dir(self):
         if not self.local_dir.exists():
