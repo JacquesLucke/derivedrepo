@@ -1,9 +1,9 @@
 import os
-
+import typing as t
 from pathlib import Path
 
-from . remotes import (
-    FolderRepoGroupAdapter,
+from . sets import (
+    RemoteFolderSetCollection,
 )
 
 from . utils import (
@@ -17,19 +17,15 @@ class ConfigFile:
     def __init__(self, path: Path):
         self.path = path
 
-    def iter_remote_repos(self):
-        for group in self.iter_remote_repo_groups():
-            yield from group.iter_repos()
-
-    def iter_remote_repo_groups(self):
+    def iter_remote_set_collections(self) -> t.Generator[RemoteFolderSetCollection, None, None]:
         data = self._load()
-        for directory in data["fileRepoGroups"]:
-            yield FolderRepoGroupAdapter(Path(directory))
+        for directory in data["remoteFolderSetCollections"]:
+            yield RemoteFolderSetCollection(Path(directory))
 
-    def add_remote_file_repo_group(self, directory: Path):
+    def add_remote_folder_set_collection(self, directory: Path):
         data = self._load()
-        if str(directory) not in data["fileRepoGroups"]:
-            data["fileRepoGroups"].append(str(directory))
+        if str(directory) not in data["remoteFolderSetCollections"]:
+            data["remoteFolderSetCollections"].append(str(directory))
             self._save(data)
 
     def set_source_path(self, path: Path):
@@ -51,7 +47,7 @@ class ConfigFile:
     def _load(self):
         self._ensure_file_exists()
         data = read_json_from_file(self.path)
-        data["fileRepoGroups"] = data.get("fileRepoGroups", [])
+        data["remoteFolderSetCollections"] = data.get("remoteFolderSetCollections", [])
         data["sourcePath"] = data.get("sourcePath", None)
         data["derivePath"] = data.get("derivePath", None)
         return data

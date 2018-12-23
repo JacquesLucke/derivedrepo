@@ -13,11 +13,7 @@ from typing import Any, List, Union, Optional, Callable, Tuple, Mapping, Sequenc
 from . config import ConfigFile
 from . logger import Logger
 from . worktree import WorkTree
-
-from . remotes import (
-    RemoteRepoAdapter,
-    FolderRepoGroupAdapter,
-)
+from . sets import LocalSet
 
 from . utils import (
     clear_directory,
@@ -53,9 +49,9 @@ class DerivedGitRepo:
 
     local_dir: Path
     default_checkout_dir: Path
-    local_repos_dir: Path
+    local_sets_dir: Path
     worktrees_dir: Path
-    config: "ConfigFile"
+    config: ConfigFile
 
     derive_path: Path
     derive: DeriveFunction
@@ -74,7 +70,7 @@ class DerivedGitRepo:
 
     def __init__(self, local_dir: PathLike):
         self.local_dir = Path(local_dir)
-        self.local_repos_dir = self.local_dir / "repos"
+        self.local_sets_dir = self.local_dir / "sets"
         self.default_checkout_dir = self.local_dir / "checkout"
         self.worktrees_dir = self.local_dir / "worktrees"
 
@@ -115,121 +111,88 @@ class DerivedGitRepo:
         self._new_set(name, final_commits, logger)
 
     def checkout(self, hexsha, directory: Optional[PathLike] = None) -> Path:
-        if directory is None:
-            directory = self.default_checkout_dir
-        directory = Path(directory)
+        local_set = self._try_get_any_set_with_commit(hexsha)
+        if local_set is None:
+            raise Exception("cannot find a derived version of that commit")
 
-        repo = self._get_any_local_repo_with_commit(hexsha)
-        if repo is None:
-            remote_repo = self._get_any_remote_repo_with_commit(hexsha)
-            if remote_repo is None:
-                raise Exception("cannot find commit")
-            self._ensure_local_repos_dir()
-            repo = remote_repo.download(self.local_repos_dir / get_random_string(8))
+        checkout_dir = self.default_checkout_dir if directory is None else Path(directory)
+        local_set.checkout(hexsha, checkout_dir)
 
-        if not directory.exists():
-            os.makedirs(directory)
-        commit = repo.tags[hexsha].commit
-        clear_directory(directory)
-        repo.git.checkout(commit.hexsha)
-        copy_working_dir(repo, directory)
-        repo.git.checkout("empty")
-        return directory
-
-    def add_remote_file_repo_group(self, path: PathLike):
-        self.config.add_remote_file_repo_group(Path(path))
-
-    def upload_all(self):
-        group = self._get_any_writeable_remote_repo_group()
-        if group is None:
-            raise Exception("cannot find writeable remote")
-
-        for repo in self._iter_local_repos():
-            group.upload_repo(repo)
+    def add_remote_folder_set_collection(self, path: PathLike):
+        self.config.add_remote_folder_set_collection(Path(path))
 
     def dump_status(self):
         print("Derived Repository in", self.local_dir)
         print("  Source:", self.source_path)
-        print("  Local Repositories:")
-        for repo in self._iter_local_repos():
-            print(f"    {Path(repo.working_dir).name}")
-        print("  Remote Groups:")
-        for group in self.config.iter_remote_repo_groups():
-            print("    Group at", group.path)
+        print("  Local Sets:")
+        for local_set in self._iter_local_sets():
+            commits = [self.source_repo.commit(hexsha) for hexsha in local_set.iter_commits()]
+            print(f"    {local_set.get_name()}: {len(commits)} commits")
+            for commit in commits:
+                print(f"      {commit.hexsha[:7]} - {commit.message.strip()}")
 
-    def _get_any_writeable_remote_repo_group(self) -> Optional[RemoteRepoAdapter]:
-        for group in self.config.iter_remote_repo_groups():
-            if not group.readonly:
-                return group
+
+    # Set Discovery
+    ##########################################
+
+    def _try_get_any_set_with_commit(self, hexsha, check_remotes = True):
+        local_set = self._get_any_local_set_with_commit(hexsha)
+        if local_set is not None:
+            return local_set
+
+        if check_remotes:
+            remote_set = self._get_any_remote_set_with_commit(hexsha)
+            if remote_set is not None:
+                local_set = remote_set.download(self.local_sets_dir / remote_set.get_name())
+                return local_set
+
         return None
 
-    def _get_any_local_repo_with_commit(self, hexsha) -> Optional[git.Repo]:
-        for repo in self._iter_local_repos_with_commit(hexsha):
-            return repo
+    # Local Sets
+    # -----------------------------
+
+    def _get_any_local_set_with_commit(self, hexsha):
+        for local_set in self._iter_local_sets_with_commit(hexsha):
+            return local_set
         return None
 
-    def _get_any_remote_repo_with_commit(self, hexsha) -> Optional[RemoteRepoAdapter]:
-        for repo in self._iter_remote_repos_with_commit(hexsha):
-            return repo
-        return None
+    def _iter_local_sets_with_commit(self, hexsha):
+        for local_set in self._iter_local_sets():
+            if local_set.has_commit(hexsha):
+                yield local_set
 
-    def _iter_remote_repos_with_commit(self, hexsha):
-        for repo in self.config.iter_remote_repos():
-            print(repo)
-            print(repo.has_commit(hexsha))
-            if repo.has_commit(hexsha):
-                yield repo
-
-    def _iter_local_repos_with_commit(self, hexsha):
-        for repo in self._iter_local_repos():
-            if hexsha in repo.tags:
-                yield repo
-
-    def _get_any_local_repo(self):
-        for repo in self._iter_local_repos():
-            return repo
-        else:
-            return self._new_local_repo()
-
-    def _new_local_repo(self):
-        name = get_random_string(10)
-        path = self.local_repos_dir / name
-        os.makedirs(path)
-        repo = git.Repo.init(path)
-        repo.git.commit("-m", "initial commit", "--allow-empty")
-        repo.git.tag("empty")
-        return repo
-
-    def _get_local_repos(self):
-        return list(self._iter_local_repos())
-
-    def _iter_local_repos(self):
-        self._ensure_local_repos_dir()
-        for name in os.listdir(self.local_repos_dir):
-            path = self.local_repos_dir / name
+    def _iter_local_sets(self):
+        self._ensure_local_sets_dir()
+        for name in os.listdir(self.local_sets_dir):
+            path = self.local_sets_dir / name
             if path.is_dir():
-                try: yield git.Repo(path)
-                except: pass
+                yield LocalSet(path)
 
-    def _add_derived_commits(self, src_commits, logger):
-        dst_repo = self._get_any_local_repo()
-        self._add_derived_commits_to_repo(dst_repo, src_commits, logger)
 
-    def _add_derived_commits_to_repo(self, dst_repo, src_commits, logger):
-        dst_repo.git.checkout("master")
+    # Remote Sets
+    # ------------------------------
 
-        for src_commit in src_commits:
-            logger.log_check_commit_to_derive(src_commit)
-            if src_commit.hexsha in dst_repo.tags:
-                logger.log_commit_already_derived(src_commit)
-                continue
-            self._insert_derived_commit(dst_repo, src_commit, logger)
+    def _get_any_remote_set_with_commit(self, hexsha):
+        for remote_set in self._iter_remote_sets_with_commit(hexsha):
+            return remote_set
+        return None
 
-        dst_repo.git.checkout("empty")
+    def _iter_remote_sets_with_commit(self, hexsha):
+        for remote_collection in self.config.iter_remote_set_collections():
+            for remote_set in remote_collection.iter_sets_with_commit(hexsha):
+                yield remote_set
+
+    def _iter_remote_sets(self):
+        for remote_collection in self.config.iter_remote_set_collections():
+            yield from remote_collection.iter_sets()
+
+
+    # Set generation
+    ########################################
 
     def _new_set(self, name, src_commits, logger):
         worktree_dir = self.worktrees_dir / name
-        final_dir = self.local_repos_dir / name
+        final_dir = self.local_sets_dir / name
         if final_dir.exists():
             raise Exception("Set exists already")
 
@@ -271,11 +234,15 @@ class DerivedGitRepo:
 
         logger.log_derivative_stored(src_commit)
 
+
+    # Utils
+    #########################################
+
     def _ensure_local_dir(self):
         ensure_dir_exists(self.local_dir)
 
-    def _ensure_local_repos_dir(self):
-        ensure_dir_exists(self.local_repos_dir)
+    def _ensure_local_sets_dir(self):
+        ensure_dir_exists(self.local_sets_dir)
 
 
 derive_file_template = textwrap.dedent('''\

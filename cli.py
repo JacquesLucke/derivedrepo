@@ -1,10 +1,12 @@
 import os
 import sys
+import git
 import time
 import click
 import datetime
 import itertools
 from pathlib import Path
+from collections import defaultdict
 from derivedrepo import DerivedGitRepo, Logger
 from derivedrepo.utils import clear_directory
 
@@ -31,12 +33,6 @@ def init(source):
         print("Could not initialize:", str(e))
 
 class NewSetLogger(Logger):
-    def log_check_commit_to_derive(self, commit):
-        print("Check commit:", commit)
-
-    def log_commit_already_derived(self, commit):
-        print("  Already derived.")
-
     def log_derive_start(self, commit):
         print("  Derive Start:", commit)
 
@@ -81,19 +77,30 @@ def set_new_latest():
 @click.argument("days", type=click.IntRange(0))
 @click.option("--branch", required=True)
 @click.option("--name", required=True)
-def set_new_latest_days(days, branch, name):
+@click.option("--split", type=click.Choice(["", "days"]), default="")
+def set_new_latest_days(days, branch, name, split):
     drepo = get_drepo()
     src_repo = drepo.get_source_repo()
 
     stop = time.time() - datetime.timedelta(days=days).total_seconds()
-    commits = []
+    all_commits = []
 
     for commit in src_repo.iter_commits(branch):
         if commit.committed_datetime.timestamp() < stop:
             break
-        commits.append(commit)
+        all_commits.append(commit)
 
-    drepo.new_set(name, list(reversed(commits)), NewSetLogger())
+    all_commits = list(reversed(all_commits))
+
+    if split == "":
+        drepo.new_set(name, all_commits, NewSetLogger())
+    elif split == "days":
+        commits_per_days = defaultdict(list)
+        for commit in all_commits:
+            date = str(commit.committed_datetime.date())
+            commits_per_days[date].append(commit)
+        for date, commits in commits_per_days.items():
+            drepo.new_set(name + " " + date, commits, NewSetLogger())
 
 @set_new_latest.command(name="commits")
 @click.argument("amount", type=click.IntRange(0))
@@ -142,7 +149,7 @@ def clear_all():
 def clear_local():
     drepo = get_drepo()
     clear_directory(drepo.default_checkout_dir)
-    clear_directory(drepo.local_repos_dir)
+    clear_directory(drepo.local_sets_dir)
     clear_directory(drepo.worktrees_dir)
 
 @cli.command()
