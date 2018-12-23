@@ -273,5 +273,5 @@ class DerivedGitRepo:
 
 
 derive_file_template = textwrap.dedent('''\
-    def derive(source):
-        return None, dict()''')
+    def derive(source, notes):
+        return None''')
