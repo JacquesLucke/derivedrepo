@@ -118,18 +118,32 @@ class DerivedGitRepo:
         checkout_dir = self.default_checkout_dir if directory is None else Path(directory)
         local_set.checkout(hexsha, checkout_dir)
 
-    def add_remote_folder_set_collection(self, path: PathLike):
-        self.config.add_remote_folder_set_collection(Path(path))
+    def add_remote(self, path: PathLike):
+        self.config.add_remote(Path(path))
 
-    def dump_status(self):
+    def remove_remote(self, path: PathLike):
+        self.config.remove_remote(Path(path))
+
+    def dump_status(self, *, show_commits=True):
         print("Derived Repository in", self.local_dir)
         print("  Source:", self.source_path)
         print("  Local Sets:")
         for local_set in self._iter_local_sets():
             commits = [self.source_repo.commit(hexsha) for hexsha in local_set.iter_commits()]
             print(f"    {local_set.get_name()}: {len(commits)} commits")
-            for commit in commits:
-                print(f"      {commit.hexsha[:7]} - {commit.message.strip()}")
+            if show_commits:
+                for commit in commits:
+                    print(f"      {commit.hexsha[:7]} - {commit.message.strip()}")
+        print("  Remote Set Collections:")
+        for set_collection in self.config.iter_remote_set_collections():
+            remote_sets = list(set_collection.iter_sets())
+            print(f"    Set Collection: {set_collection.get_identifier()}")
+            for remote_set in remote_sets:
+                commits = [self.source_repo.commit(hexsha) for hexsha in remote_set.iter_commits()]
+                print(f"      {remote_set.get_name()}: {len(commits)} commits")
+                if show_commits:
+                    for commit in commits:
+                        print(f"       {commit.hexsha[:7]} - {commit.message.strip()}")
 
 
     # Set Discovery
@@ -150,6 +164,9 @@ class DerivedGitRepo:
 
     # Local Sets
     # -----------------------------
+
+    def get_local_sets(self):
+        return list(self._iter_local_sets())
 
     def _get_any_local_set_with_commit(self, hexsha):
         for local_set in self._iter_local_sets_with_commit(hexsha):
@@ -172,6 +189,9 @@ class DerivedGitRepo:
     # Remote Sets
     # ------------------------------
 
+    def get_remote_sets(self):
+        return list(self._iter_remote_sets())
+
     def _get_any_remote_set_with_commit(self, hexsha):
         for remote_set in self._iter_remote_sets_with_commit(hexsha):
             return remote_set
@@ -185,6 +205,13 @@ class DerivedGitRepo:
     def _iter_remote_sets(self):
         for remote_collection in self.config.iter_remote_set_collections():
             yield from remote_collection.iter_sets()
+
+
+    # Remote Collections
+    # ------------------------------
+
+    def get_remote_set_collections(self):
+        return list(self.config.iter_remote_set_collections())
 
 
     # Set generation

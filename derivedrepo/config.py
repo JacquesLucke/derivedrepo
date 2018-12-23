@@ -19,14 +19,24 @@ class ConfigFile:
 
     def iter_remote_set_collections(self) -> t.Generator[RemoteFolderSetCollection, None, None]:
         data = self._load()
-        for directory in data["remoteFolderSetCollections"]:
+        for directory in data["remotes"]:
             yield RemoteFolderSetCollection(Path(directory))
 
-    def add_remote_folder_set_collection(self, directory: Path):
+    def add_remote(self, directory: Path):
+        assert directory.is_dir()
+
         data = self._load()
-        if str(directory) not in data["remoteFolderSetCollections"]:
-            data["remoteFolderSetCollections"].append(str(directory))
+        if str(directory) not in data["remotes"]:
+            data["remotes"].append(str(directory))
             self._save(data)
+
+    def remove_remote(self, directory: Path):
+        data = self._load()
+        original_length = len(data["remotes"])
+        data["remotes"] = [p for p in data["remotes"] if not os.path.samefile(p, directory)]
+        if len(data["remotes"]) == original_length:
+            raise Exception("path was no remote: " + str(directory))
+        self._save(data)
 
     def set_source_path(self, path: Path):
         data = self._load()
@@ -47,7 +57,7 @@ class ConfigFile:
     def _load(self):
         self._ensure_file_exists()
         data = read_json_from_file(self.path)
-        data["remoteFolderSetCollections"] = data.get("remoteFolderSetCollections", [])
+        data["remotes"] = data.get("remotes", [])
         data["sourcePath"] = data.get("sourcePath", None)
         data["derivePath"] = data.get("derivePath", None)
         return data

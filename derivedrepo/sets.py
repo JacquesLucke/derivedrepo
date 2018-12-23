@@ -94,5 +94,6 @@ class RemoteFolderSetCollection(RemoteSetCollection):
         for name in os.listdir(self.path):
             repo_path = self.path / name
             if repo_path.is_dir():
-                try: yield RemoteFolderSet(repo_path)
-                except: pass
+                try: remote_set = RemoteFolderSet(repo_path)
+                except: continue
+                yield remote_set

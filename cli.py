@@ -53,10 +53,21 @@ def set_():
     pass
 
 @set_.command(name="list")
-def set_list():
+@click.option("--local", is_flag=True)
+@click.option("--remote", is_flag=True)
+def set_list(local, remote):
+    if not (local or remote):
+        click.echo("Choose --local and/or --remote option")
+        return
+
     drepo = get_drepo()
-    for repo in drepo._iter_local_repos():
-        print(repo)
+    if local:
+        for local_set in drepo.get_local_sets():
+            print(f"Local: {local_set.get_name()}")
+    if remote:
+        for remote_set in drepo.get_remote_sets():
+            print(f"Remote: {remote_set.get_identifier()}")
+
 
 @set_.group(name="new")
 def set_new():
@@ -153,9 +164,32 @@ def clear_local():
     clear_directory(drepo.worktrees_dir)
 
 @cli.command()
-def status():
+@click.option("--commits", is_flag=True, help="Show all commits and their titles.")
+def status(commits):
     drepo = get_drepo()
-    drepo.dump_status()
+    drepo.dump_status(show_commits=commits)
+
+@cli.group()
+def remote():
+    pass
+
+@remote.command(name="add")
+@click.argument("path")
+def remote_add(path):
+    drepo = get_drepo()
+    drepo.add_remote(path)
+
+@remote.command(name="list")
+def remote_list():
+    drepo = get_drepo()
+    for set_collection in drepo.get_remote_set_collections():
+        print(set_collection.get_identifier())
+
+@remote.command(name="rm")
+@click.argument("path")
+def remote_rm(path):
+    drepo = get_drepo()
+    drepo.remove_remote(path)
 
 def get_drepo() -> DerivedGitRepo:
     return DerivedGitRepo(os.getcwd())
