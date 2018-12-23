@@ -226,18 +226,17 @@ class DerivedGitRepo:
 
         self.source_repo.git.checkout(src_commit.hexsha)
 
+        custom_notes = dict()
         try:
-            output = self.derive(self.source_path)
+            output_dir = self.derive(self.source_path, custom_notes)
         except:
             traceback.print_exc()
-            output = (None, dict())
-
-        output_dir, output_dict = output
+            output_dir = None
 
         if output_dir is None:
-            note = {"valid" : False, "data" : output_dict}
+            note = {"valid" : False, "data" : custom_notes}
         else:
-            note = {"valid" : True, "data" : output_dict}
+            note = {"valid" : True, "data" : custom_notes}
             output_dir = Path(output_dir)
             clear_working_dir(dst_repo)
             copy_to_working_dir(output_dir, dst_repo)
